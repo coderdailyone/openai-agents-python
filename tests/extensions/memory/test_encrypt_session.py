@@ -302,6 +302,46 @@ async def test_runner_decrypts_existing_compaction_history_with_ttl_and_limit(
         backend.close()
 
 
+@pytest.mark.asyncio
+async def test_encrypted_compaction_reads_whole_store_despite_session_limit(
+    encryption_key: str, tmp_path: Path
+) -> None:
+    """The retrieval window set by SessionSettings.limit must not decide what compaction
+    replaces: the whole decrypted store is the compaction input."""
+    backend = SQLiteSession("limited-encrypted", tmp_path / "history.db")
+    mock_compact_response = MagicMock()
+    mock_compact_response.output = [{"type": "message", "role": "assistant", "content": "summary"}]
+    mock_client = MagicMock()
+    mock_client.responses.compact = AsyncMock(return_value=mock_compact_response)
+    session = EncryptedSession(
+        backend.session_id,
+        OpenAIResponsesCompactionSession(
+            backend.session_id,
+            backend,
+            client=mock_client,
+            compaction_mode="input",
+            should_trigger_compaction=lambda _: True,
+        ),
+        encryption_key,
+    )
+    session.session_settings = SessionSettings(limit=1)
+    history = [
+        {"role": "user", "content": "oldest"},
+        {"role": "assistant", "content": "middle"},
+        {"role": "user", "content": "newest"},
+    ]
+    try:
+        await session.add_items(cast(list[TResponseInputItem], history))
+        assert await session.get_items() == history[-1:]
+
+        await session.run_compaction()
+
+        mock_client.responses.compact.assert_awaited_once_with(model="gpt-4.1", input=history)
+        assert await session.get_items(limit=10) == mock_compact_response.output
+    finally:
+        backend.close()
+
+
 async def test_runner_defers_compaction_using_decrypted_candidates(
     encryption_key: str, tmp_path: Path
 ) -> None:

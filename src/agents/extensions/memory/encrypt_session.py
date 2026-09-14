@@ -37,7 +37,10 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from typing_extensions import TypedDict
 
 from ...items import TResponseInputItem
-from ...memory.openai_responses_compaction_session import OpenAIResponsesCompactionSession
+from ...memory.openai_responses_compaction_session import (
+    _ALL_SESSION_ITEMS_LIMIT,
+    OpenAIResponsesCompactionSession,
+)
 from ...memory.session import (
     OpenAIResponsesCompactionArgs,
     SessionABC,
@@ -159,10 +162,22 @@ class EncryptedSession(SessionABC):
         await session._run_compaction(
             args,
             wrapper=wrapper,
-            read_items=lambda: _call_session_method(
-                self.get_items, wrapper=_get_session_wrapper(self, wrapper)
-            ),
+            read_items=lambda: self._read_all_items_for_compaction(wrapper),
             prepare_items=self._encrypt_items,
+        )
+
+    async def _read_all_items_for_compaction(
+        self, wrapper: RunContextWrapper[Any] | None
+    ) -> list[TResponseInputItem]:
+        # Compaction replaces the whole store, so it must see every stored item that
+        # still decrypts, not the retrieval window a SessionSettings.limit would return.
+        return cast(
+            list[TResponseInputItem],
+            await _call_session_method(
+                self.get_items,
+                _ALL_SESSION_ITEMS_LIMIT,
+                wrapper=_get_session_wrapper(self, wrapper),
+            ),
         )
 
     async def _defer_encrypted_compaction(
@@ -176,9 +191,7 @@ class EncryptedSession(SessionABC):
         await session._defer_compaction(
             response_id,
             store,
-            read_items=lambda: _call_session_method(
-                self.get_items, wrapper=_get_session_wrapper(self, wrapper)
-            ),
+            read_items=lambda: self._read_all_items_for_compaction(wrapper),
         )
 
     @property

@@ -576,7 +576,13 @@ class OpenAIResponsesCompactionSession(SessionABC, OpenAIResponsesCompactionAwar
         if self._compaction_candidate_items is not None and self._session_items is not None:
             return (self._compaction_candidate_items[:], self._session_items[:])
 
-        history = _normalize_compaction_session_items(await self.underlying_session.get_items())
+        # Read the whole stored history, not the retrieval window a
+        # SessionSettings.limit on the underlying session would return. Compaction
+        # replaces the entire store with its output, so compacting only the window
+        # would silently delete every older item.
+        history = _normalize_compaction_session_items(
+            await self._get_all_underlying_session_items()
+        )
         candidates = select_compaction_candidate_items(history)
         self._compaction_candidate_items = candidates
         self._session_items = history

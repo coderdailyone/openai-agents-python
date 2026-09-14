@@ -1170,6 +1170,56 @@ class TestOpenAIResponsesCompactionSession:
         assert failing_session.add_calls == 2
 
     @pytest.mark.asyncio
+    async def test_run_compaction_compacts_whole_store_when_session_limit_applies(
+        self,
+    ) -> None:
+        """A SessionSettings.limit on the underlying session narrows what the model reads,
+        not what compaction replaces. Compacting only that window and then clearing the
+        store would silently delete every older item."""
+        history: list[TResponseInputItem] = [
+            cast(TResponseInputItem, {"type": "message", "role": "user", "content": "oldest"}),
+            cast(TResponseInputItem, {"type": "message", "role": "assistant", "content": "middle"}),
+            cast(TResponseInputItem, {"type": "message", "role": "user", "content": "newest"}),
+        ]
+        underlying = SQLiteSession("limited", session_settings=SessionSettings(limit=1))
+        try:
+            await underlying.add_items(history)
+            assert await underlying.get_items() == history[-1:]
+
+            compacted_items: list[TResponseInputItem] = [
+                cast(
+                    TResponseInputItem,
+                    {"type": "message", "role": "assistant", "content": "compacted"},
+                )
+            ]
+            mock_compact_response = MagicMock()
+            mock_compact_response.output = compacted_items
+            mock_client = MagicMock()
+            mock_client.responses.compact = AsyncMock(return_value=mock_compact_response)
+            seen_contexts: list[dict[str, Any]] = []
+
+            def should_trigger(context: dict[str, Any]) -> bool:
+                seen_contexts.append(context)
+                return True
+
+            session = OpenAIResponsesCompactionSession(
+                session_id="limited",
+                underlying_session=underlying,
+                client=mock_client,
+                compaction_mode="input",
+                should_trigger_compaction=should_trigger,
+            )
+
+            await session.run_compaction()
+
+            assert seen_contexts[0]["session_items"] == history
+            assert seen_contexts[0]["compaction_candidate_items"] == history[1:2]
+            mock_client.responses.compact.assert_awaited_once_with(model="gpt-4.1", input=history)
+            assert await underlying.get_items(limit=10) == compacted_items
+        finally:
+            underlying.close()
+
+    @pytest.mark.asyncio
     async def test_run_compaction_does_not_restore_when_clear_fails_without_mutation(
         self,
     ) -> None:
