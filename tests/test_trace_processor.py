@@ -584,6 +584,29 @@ def test_backend_span_exporter_retries_transient_client_errors(mock_client, stat
 
 
 @patch("httpx2.Client")
+def test_backend_span_exporter_rate_limit_obeys_x_should_retry_false(mock_client, caplog):
+    """An explicit `x-should-retry: false` wins over the status classification, as in the
+    OpenAI client."""
+    mock_response = MagicMock()
+    mock_response.status_code = 429
+    mock_response.headers = {"x-should-retry": "false", "retry-after": "1"}
+    mock_response.text = "rate limited"
+    mock_client.return_value.post.return_value = mock_response
+
+    exporter = BackendSpanExporter(api_key="test_key", max_retries=3, base_delay=0.1, max_delay=0.2)
+    with (
+        patch.object(exporter._shutdown_event, "wait", return_value=False) as wait_for_retry,
+        caplog.at_level(logging.ERROR, logger="openai.agents"),
+    ):
+        exporter.export([get_span(mock_processor())])
+
+    mock_client.return_value.post.assert_called_once()
+    wait_for_retry.assert_not_called()
+    assert "Tracing client error 429" in caplog.text
+    exporter.close()
+
+
+@patch("httpx2.Client")
 def test_backend_span_exporter_rate_limit_recovers_after_retry(mock_client):
     ok_response = MagicMock()
     ok_response.status_code = 200
